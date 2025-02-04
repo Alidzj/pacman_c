@@ -13,7 +13,7 @@
 // Define a struct for each cell
 typedef struct
 {
-    char type; // Type of cell (WALL, FOOD, PACMAN, DEMON, EMPTY)
+    char type; // Type of cell (WALL, FOOD, PACMAN, DEMON, EMPTY, ENEMY)
     int value; // Additional value (e.g., for food points, demon ID, etc.)
 } Cell;
 
@@ -23,6 +23,7 @@ typedef struct
 #define FOOD '.'
 #define EMPTY ' '
 #define DEMON 'X'
+#define ENEMY 'E'
 
 // Global Variables are
 // Declared here
@@ -35,6 +36,7 @@ int curr = 0;
 int level = 1;         // Current level
 int computer_mode = 0; // 0 for manual mode, 1 for computer mode
 int stop_thread = 0;   // Flag to stop the random movement thread
+int enemy_speed = 1;   // Speed of enemies (in seconds)
 
 // Function to save the current game state to a binary file
 void saveGame()
@@ -114,7 +116,7 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1; // Avoid boundary walls
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY)
         {
             board[i][j].type = WALL;
             board[i][j].value = 0;
@@ -129,11 +131,26 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1;
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY)
         {
             board[i][j].type = DEMON;
             board[i][j].value = demonCount; // Use value to store demon ID or other data
             demonCount--;
+        }
+    }
+
+    // Add enemies based on the level
+    int enemyCount = 3 + level; // Increase enemies with level
+    while (enemyCount != 0)
+    {
+        int i = (rand() % (HEIGHT - 2)) + 1;
+        int j = (rand() % (WIDTH - 2)) + 1;
+
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != DEMON && board[i][j].type != ENEMY)
+        {
+            board[i][j].type = ENEMY;
+            board[i][j].value = 0; // Use value for enemy-specific data if needed
+            enemyCount--;
         }
     }
 
@@ -200,9 +217,9 @@ void move(int move_x, int move_y)
                 res = 0;      // Reset game result
             }
         }
-        else if (board[y][x].type == DEMON)
+        else if (board[y][x].type == DEMON || board[y][x].type == ENEMY)
         {
-            res = 1; // Game over
+            res = 1; // Game over if Pac-Man collides with a demon or enemy
         }
 
         board[pacman_y][pacman_x].type = EMPTY;
@@ -215,6 +232,64 @@ void move(int move_x, int move_y)
         // Refresh the screen only when there is a change
         draw();
     }
+}
+
+// Function to move enemies randomly
+void move_enemy(int x, int y)
+{
+    int direction = rand() % 4; // 0: up, 1: down, 2: left, 3: right
+    int new_x = x, new_y = y;
+
+    switch (direction)
+    {
+    case 0:
+        new_y--;
+        break; // Up
+    case 1:
+        new_y++;
+        break; // Down
+    case 2:
+        new_x--;
+        break; // Left
+    case 3:
+        new_x++;
+        break; // Right
+    }
+
+    // Check if the new position is valid
+    if (board[new_y][new_x].type == EMPTY || board[new_y][new_x].type == FOOD)
+    {
+        board[y][x].type = EMPTY;
+        board[y][x].value = 0;
+        board[new_y][new_x].type = ENEMY;
+        board[new_y][new_x].value = 0;
+    }
+    else if (board[new_y][new_x].type == PACMAN)
+    {
+        // Enemy eats Pac-Man
+        res = 1; // Game over
+    }
+}
+
+// Function to handle enemy movements
+void *enemy_movement(void *arg)
+{
+    while (!stop_thread)
+    {
+        for (int i = 1; i < HEIGHT - 1; i++)
+        {
+            for (int j = 1; j < WIDTH - 1; j++)
+            {
+                if (board[i][j].type == ENEMY)
+                {
+                    move_enemy(j, i);
+                }
+            }
+        }
+        draw();
+        sleep(enemy_speed); // Wait based on enemy speed
+    }
+    return NULL;
 }
 
 // Function to handle random movements in computer mode
@@ -251,7 +326,7 @@ int main()
 {
     char ch;
     int totalFood;
-    pthread_t thread_id;
+    pthread_t thread_id, enemy_thread_id;
 
     // Initialize random seed
     srand(time(NULL));
@@ -293,6 +368,9 @@ int main()
     // Create a thread for random movement
     pthread_create(&thread_id, NULL, random_movement, NULL);
 
+    // Create a thread for enemy movement
+    pthread_create(&enemy_thread_id, NULL, enemy_movement, NULL);
+
     // Game instructions
     printf("Use buttons for w(up), a(left), d(right), and s(down)\n");
     printf("Press 'q' to quit or 'p' to save and quit.\n");
@@ -303,9 +381,10 @@ int main()
         if (res == 1)
         {
             system("cls");
-            printf("Game Over! Dead by Demon\n Your Score: %d\n", score);
-            stop_thread = 1;               // Stop the random movement thread
-            pthread_join(thread_id, NULL); // Wait for the thread to finish
+            printf("Game Over! Pac-Man was eaten by an enemy!\n Your Score: %d\n", score);
+            stop_thread = 1;                     // Stop the random movement thread
+            pthread_join(thread_id, NULL);       // Wait for the thread to finish
+            pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
             return 1;
         }
 
@@ -313,8 +392,9 @@ int main()
         {
             system("cls");
             printf("You Win! \n Your Score: %d\n", score);
-            stop_thread = 1;               // Stop the random movement thread
-            pthread_join(thread_id, NULL); // Wait for the thread to finish
+            stop_thread = 1;                     // Stop the random movement thread
+            pthread_join(thread_id, NULL);       // Wait for the thread to finish
+            pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
             return 1;
         }
 
@@ -339,14 +419,16 @@ int main()
             break;
         case 'q':
             printf("Game Over! Your Score: %d\n", score);
-            stop_thread = 1;               // Stop the random movement thread
-            pthread_join(thread_id, NULL); // Wait for the thread to finish
+            stop_thread = 1;                     // Stop the random movement thread
+            pthread_join(thread_id, NULL);       // Wait for the thread to finish
+            pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
             return 0;
         case 'p':
             saveGame();
             printf("Game saved. Exiting...\n");
-            stop_thread = 1;               // Stop the random movement thread
-            pthread_join(thread_id, NULL); // Wait for the thread to finish
+            stop_thread = 1;                     // Stop the random movement thread
+            pthread_join(thread_id, NULL);       // Wait for the thread to finish
+            pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
             return 0;
         case 'o':
             computer_mode = !computer_mode;
