@@ -23,6 +23,51 @@ int pacman_x, pacman_y;
 char board[HEIGHT][WIDTH];
 int food = 0;
 int curr = 0;
+
+// Function to save the current game state to a binary file
+void saveGame() {
+    FILE *file = fopen("saved_game.bin", "wb"); // Open file in binary write mode
+    if (file == NULL) {
+        printf("Error saving game!\n");
+        return;
+    }
+
+    // Save Pacman's position and game variables
+    fwrite(&pacman_x, sizeof(int), 1, file);
+    fwrite(&pacman_y, sizeof(int), 1, file);
+    fwrite(&score, sizeof(int), 1, file);
+    fwrite(&food, sizeof(int), 1, file);
+    fwrite(&curr, sizeof(int), 1, file);
+
+    // Save the game board
+    fwrite(board, sizeof(char), HEIGHT * WIDTH, file);
+
+    fclose(file); // Close the file
+    printf("Game saved successfully!\n");
+}
+
+// Function to load the game state from a binary file
+int loadGame() {
+    FILE *file = fopen("saved_game.bin", "rb"); // Open file in binary read mode
+    if (file == NULL) {
+        printf("No saved game found.\n");
+        return 0; // No saved game exists
+    }
+
+    // Load Pacman's position and game variables
+    fread(&pacman_x, sizeof(int), 1, file);
+    fread(&pacman_y, sizeof(int), 1, file);
+    fread(&score, sizeof(int), 1, file);
+    fread(&food, sizeof(int), 1, file);
+    fread(&curr, sizeof(int), 1, file);
+
+    // Load the game board
+    fread(board, sizeof(char), HEIGHT * WIDTH, file);
+
+    fclose(file); // Close the file
+    printf("Game loaded successfully!\n");
+    return 1; // Game loaded successfully
+}
 void initialize()
 {
     // Putting Walls as boundary in the Game
@@ -149,70 +194,85 @@ void move(int move_x, int move_y)
 }
 
 // Main Function
-int main()
-{
-    initialize();
+int main() {
     char ch;
-    food -= 35;
-    int totalFood = food;
-    // Instructions to Play
-    printf(" Use buttons for w(up), a(left) , d(right) and "
-           "s(down)\nAlso, Press q for quit\n");
+    int totalFood;
 
-    printf("Enter Y to continue: \n");
-
-    ch = getch();
-    if (ch != 'Y' && ch != 'y')
-    {
-        printf("Exit Game! ");
-        return 1;
+    // Check if a saved game file exists
+    FILE *file = fopen("saved_game.bin", "rb");
+    if (file != NULL) {
+        fclose(file);
+        printf("A saved game exists. Do you want to continue? (Y/N): ");
+        ch = getch();
+        if (ch == 'Y' || ch == 'y') {
+            if (loadGame()) {
+                totalFood = food; // Set total food count
+                draw(); // Draw the loaded game state
+            } else {
+                // If the saved game is corrupted, start a new game
+                initialize();
+                totalFood = food - 35;
+                remove("saved_game.bin"); // Delete the corrupted save file
+            }
+        } else {
+            // If the user chooses to start a new game, delete the saved file
+            initialize();
+            totalFood = food - 35;
+            remove("saved_game.bin"); // Delete the saved file
+        }
+    } else {
+        // If no saved game exists, start a new game
+        initialize();
+        totalFood = food - 35;
     }
 
-    while (1)
-    {
-        draw();
+    // Display game instructions
+    printf("Use buttons for w(up), a(left), d(right), and s(down)\n");
+    printf("Press 'q' to quit or 'p' to save and quit.\n");
+
+    while (1) {
+        draw(); // Draw the current game state
         printf("Total Food count: %d\n", totalFood);
         printf("Total Food eaten: %d\n", curr);
-        if (res == 1)
-        {
-            // Clear screen
+
+        // Check if the game is over (Pacman died)
+        if (res == 1) {
             system("cls");
-            printf("Game Over! Dead by Demon\n Your Score: "
-                   "%d\n",
-                   score);
+            printf("Game Over! Dead by Demon\n Your Score: %d\n", score);
             return 1;
         }
 
-        if (res == 2)
-        {
-            // Clear screen
+        // Check if the game is won (all food collected)
+        if (res == 2) {
             system("cls");
             printf("You Win! \n Your Score: %d\n", score);
             return 1;
         }
 
-        // Taking the Input from the user
+        // Get user input
         ch = getch();
 
-        // Moving According to the
-        // input character
-        switch (ch)
-        {
-        case 'w':
-            move(0, -1);
-            break;
-        case 's':
-            move(0, 1);
-            break;
-        case 'a':
-            move(-1, 0);
-            break;
-        case 'd':
-            move(1, 0);
-            break;
-        case 'q':
-            printf("Game Over! Your Score: %d\n", score);
-            return 0;
+        // Handle user input
+        switch (ch) {
+            case 'w': // Move up
+                move(0, -1);
+                break;
+            case 's': // Move down
+                move(0, 1);
+                break;
+            case 'a': // Move left
+                move(-1, 0);
+                break;
+            case 'd': // Move right
+                move(1, 0);
+                break;
+            case 'q': // Quit the game
+                printf("Game Over! Your Score: %d\n", score);
+                return 0;
+            case 'p': // Save and quit
+                saveGame();
+                printf("Game saved. Exiting...\n");
+                return 0;
         }
     }
 
