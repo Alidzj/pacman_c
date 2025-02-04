@@ -13,7 +13,7 @@
 // Define a struct for each cell
 typedef struct
 {
-    char type; // Type of cell (WALL, FOOD, PACMAN, DEMON, EMPTY, ENEMY)
+    char type; // Type of cell (WALL, FOOD, PACMAN, DEMON, EMPTY, ENEMY, BOOST)
     int value; // Additional value (e.g., for food points, demon ID, etc.)
 } Cell;
 
@@ -24,6 +24,7 @@ typedef struct
 #define EMPTY ' '
 #define DEMON 'X'
 #define ENEMY 'E'
+#define BOOST '$'
 
 // Global Variables are
 // Declared here
@@ -33,10 +34,12 @@ int pacman_x, pacman_y;
 Cell board[HEIGHT][WIDTH]; // 2D array of struct Cell
 int food = 0;
 int curr = 0;
-int level = 1;         // Current level
-int computer_mode = 0; // 0 for manual mode, 1 for computer mode
-int stop_thread = 0;   // Flag to stop the random movement thread
-int enemy_speed = 1;   // Speed of enemies (in seconds)
+int level = 1;           // Current level
+int computer_mode = 0;   // 0 for manual mode, 1 for computer mode
+int stop_thread = 0;     // Flag to stop the random movement thread
+int enemy_speed = 1;     // Speed of enemies (in seconds)
+int boost_moves = 0;     // Remaining boost moves
+int is_boost_active = 0; // Flag to check if boost is active
 
 // Function to save the current game state to a binary file
 void saveGame()
@@ -55,6 +58,7 @@ void saveGame()
     fwrite(&score, sizeof(int), 1, file);
     fwrite(&food, sizeof(int), 1, file);
     fwrite(&curr, sizeof(int), 1, file);
+    fwrite(&boost_moves, sizeof(int), 1, file);
 
     // Save the board
     fwrite(board, sizeof(Cell), HEIGHT * WIDTH, file);
@@ -80,6 +84,7 @@ int loadGame()
     fread(&score, sizeof(int), 1, file);
     fread(&food, sizeof(int), 1, file);
     fread(&curr, sizeof(int), 1, file);
+    fread(&boost_moves, sizeof(int), 1, file);
 
     // Load the board
     fread(board, sizeof(Cell), HEIGHT * WIDTH, file);
@@ -116,7 +121,7 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1; // Avoid boundary walls
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY && board[i][j].type != BOOST)
         {
             board[i][j].type = WALL;
             board[i][j].value = 0;
@@ -131,7 +136,7 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1;
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY && board[i][j].type != BOOST)
         {
             board[i][j].type = DEMON;
             board[i][j].value = demonCount; // Use value to store demon ID or other data
@@ -146,11 +151,26 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1;
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != DEMON && board[i][j].type != ENEMY)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != DEMON && board[i][j].type != BOOST)
         {
             board[i][j].type = ENEMY;
             board[i][j].value = 0; // Use value for enemy-specific data if needed
             enemyCount--;
+        }
+    }
+
+    // Add boosts based on the level
+    int boostCount = 2 + level; // Increase boosts with level
+    while (boostCount != 0)
+    {
+        int i = (rand() % (HEIGHT - 2)) + 1;
+        int j = (rand() % (WIDTH - 2)) + 1;
+
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != DEMON && board[i][j].type != ENEMY && board[i][j].type != BOOST)
+        {
+            board[i][j].type = BOOST;
+            board[i][j].value = 0; // Use value for boost-specific data if needed
+            boostCount--;
         }
     }
 
@@ -195,6 +215,10 @@ void draw()
     printf("Total Food count: %d\n", food);
     printf("Total Food eaten: %d\n", curr);
     printf("Computer mode: %s\n", computer_mode ? "ON" : "OFF");
+    if (is_boost_active)
+    {
+        printf("Boost moves left: %d\n", boost_moves);
+    }
 }
 
 // Function enables to move the Cursor
@@ -216,6 +240,11 @@ void move(int move_x, int move_y)
                 initialize(); // Generate new level
                 res = 0;      // Reset game result
             }
+        }
+        else if (board[y][x].type == BOOST)
+        {
+            is_boost_active = 1;
+            boost_moves = 10; // Activate boost for 10 moves
         }
         else if (board[y][x].type == DEMON || board[y][x].type == ENEMY)
         {
@@ -403,19 +432,63 @@ int main()
         {
         case 'w':
             if (!computer_mode)
+            {
                 move(0, -1);
+                if (is_boost_active && boost_moves > 0)
+                {
+                    move(0, -1); // Move twice during boost
+                    boost_moves--;
+                    if (boost_moves == 0)
+                    {
+                        is_boost_active = 0;
+                    }
+                }
+            }
             break;
         case 's':
             if (!computer_mode)
+            {
                 move(0, 1);
+                if (is_boost_active && boost_moves > 0)
+                {
+                    move(0, 1); // Move twice during boost
+                    boost_moves--;
+                    if (boost_moves == 0)
+                    {
+                        is_boost_active = 0;
+                    }
+                }
+            }
             break;
         case 'a':
             if (!computer_mode)
+            {
                 move(-1, 0);
+                if (is_boost_active && boost_moves > 0)
+                {
+                    move(-1, 0); // Move twice during boost
+                    boost_moves--;
+                    if (boost_moves == 0)
+                    {
+                        is_boost_active = 0;
+                    }
+                }
+            }
             break;
         case 'd':
             if (!computer_mode)
+            {
                 move(1, 0);
+                if (is_boost_active && boost_moves > 0)
+                {
+                    move(1, 0); // Move twice during boost
+                    boost_moves--;
+                    if (boost_moves == 0)
+                    {
+                        is_boost_active = 0;
+                    }
+                }
+            }
             break;
         case 'q':
             printf("Game Over! Your Score: %d\n", score);
