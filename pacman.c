@@ -9,6 +9,15 @@
 // Declared here
 #define WIDTH 40
 #define HEIGHT 20
+
+// Define a struct for each cell
+typedef struct
+{
+    char type; // Type of cell (WALL, FOOD, PACMAN, DEMON, EMPTY)
+    int value; // Additional value (e.g., for food points, demon ID, etc.)
+} Cell;
+
+// Constants for cell types
 #define PACMAN 'C'
 #define WALL '#'
 #define FOOD '.'
@@ -20,7 +29,7 @@
 int res = 0;
 int score = 0;
 int pacman_x, pacman_y;
-char board[HEIGHT][WIDTH];
+Cell board[HEIGHT][WIDTH]; // 2D array of struct Cell
 int food = 0;
 int curr = 0;
 int level = 1;         // Current level
@@ -46,7 +55,7 @@ void saveGame()
     fwrite(&curr, sizeof(int), 1, file);
 
     // Save the board
-    fwrite(board, sizeof(char), HEIGHT * WIDTH, file);
+    fwrite(board, sizeof(Cell), HEIGHT * WIDTH, file);
 
     fclose(file);
     printf("Game saved successfully!\n");
@@ -71,7 +80,7 @@ int loadGame()
     fread(&curr, sizeof(int), 1, file);
 
     // Load the board
-    fread(board, sizeof(char), HEIGHT * WIDTH, file);
+    fread(board, sizeof(Cell), HEIGHT * WIDTH, file);
 
     fclose(file);
     printf("Game loaded successfully!\n");
@@ -87,11 +96,13 @@ void initialize()
         {
             if (i == 0 || j == WIDTH - 1 || j == 0 || i == HEIGHT - 1)
             {
-                board[i][j] = WALL; // Boundary walls
+                board[i][j].type = WALL; // Boundary walls
+                board[i][j].value = 0;   // No additional value for walls
             }
             else
             {
-                board[i][j] = EMPTY;
+                board[i][j].type = EMPTY;
+                board[i][j].value = 0;
             }
         }
     }
@@ -103,9 +114,10 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1; // Avoid boundary walls
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j] != WALL && board[i][j] != PACMAN)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN)
         {
-            board[i][j] = WALL;
+            board[i][j].type = WALL;
+            board[i][j].value = 0;
             wallCount--;
         }
     }
@@ -117,9 +129,10 @@ void initialize()
         int i = (rand() % (HEIGHT - 2)) + 1;
         int j = (rand() % (WIDTH - 2)) + 1;
 
-        if (board[i][j] != WALL && board[i][j] != PACMAN)
+        if (board[i][j].type != WALL && board[i][j].type != PACMAN)
         {
-            board[i][j] = DEMON;
+            board[i][j].type = DEMON;
+            board[i][j].value = demonCount; // Use value to store demon ID or other data
             demonCount--;
         }
     }
@@ -127,7 +140,8 @@ void initialize()
     // Place Pacman at the center
     pacman_x = WIDTH / 2;
     pacman_y = HEIGHT / 2;
-    board[pacman_y][pacman_x] = PACMAN;
+    board[pacman_y][pacman_x].type = PACMAN;
+    board[pacman_y][pacman_x].value = 0;
 
     // Place food
     food = 0;
@@ -135,9 +149,10 @@ void initialize()
     {
         for (int j = 1; j < WIDTH - 1; j++)
         {
-            if (board[i][j] == EMPTY)
+            if (board[i][j].type == EMPTY)
             {
-                board[i][j] = FOOD;
+                board[i][j].type = FOOD;
+                board[i][j].value = 1; // Use value to store food points
                 food++;
             }
         }
@@ -154,7 +169,7 @@ void draw()
     {
         for (int j = 0; j < WIDTH; j++)
         {
-            printf("%c", board[i][j]);
+            printf("%c", board[i][j].type); // Print the type of the cell
         }
         printf("\n");
     }
@@ -171,11 +186,11 @@ void move(int move_x, int move_y)
     int x = pacman_x + move_x;
     int y = pacman_y + move_y;
 
-    if (board[y][x] != WALL)
+    if (board[y][x].type != WALL)
     {
-        if (board[y][x] == FOOD)
+        if (board[y][x].type == FOOD)
         {
-            score++;
+            score += board[y][x].value; // Add food points to score
             food--;
             curr++;
             if (food == 0)
@@ -185,15 +200,17 @@ void move(int move_x, int move_y)
                 res = 0;      // Reset game result
             }
         }
-        else if (board[y][x] == DEMON)
+        else if (board[y][x].type == DEMON)
         {
             res = 1; // Game over
         }
 
-        board[pacman_y][pacman_x] = EMPTY;
+        board[pacman_y][pacman_x].type = EMPTY;
+        board[pacman_y][pacman_x].value = 0;
         pacman_x = x;
         pacman_y = y;
-        board[pacman_y][pacman_x] = PACMAN;
+        board[pacman_y][pacman_x].type = PACMAN;
+        board[pacman_y][pacman_x].value = 0;
 
         // Refresh the screen only when there is a change
         draw();
