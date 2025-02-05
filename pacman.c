@@ -5,16 +5,24 @@
 #include <unistd.h>
 #include <time.h>
 
+// Color support (ANSI escape codes)
+#define ANSI_COLOR_RED "\x1b[31m"
+#define ANSI_COLOR_GREEN "\x1b[32m"
+#define ANSI_COLOR_YELLOW "\x1b[33m"
+#define ANSI_COLOR_BLUE "\x1b[34m"
+#define ANSI_COLOR_MAGENTA "\x1b[35m"
+#define ANSI_COLOR_CYAN "\x1b[36m"
+#define ANSI_COLOR_RESET "\x1b[0m"
+
 // All the elements to be used
-// Declared here
 #define WIDTH 40
 #define HEIGHT 20
 
 // Define a struct for each cell
 typedef struct
 {
-    char type; // Type of cell (WALL, FOOD, PACMAN, DEMON, EMPTY, ENEMY, BOOST)
-    int value; // Additional value (e.g., for food points, demon ID, etc.)
+    char type;
+    int value;
 } Cell;
 
 // Constants for cell types
@@ -26,22 +34,23 @@ typedef struct
 #define ENEMY 'E'
 #define BOOST '$'
 
-// Global Variables are
-// Declared here
+// Global Variables
 int res = 0;
-int score = 0;
+int score = 0;       // Total score, does NOT reset
+int level_score = 0; // Score for current level
 int pacman_x, pacman_y;
-Cell board[HEIGHT][WIDTH]; // 2D array of struct Cell
+Cell board[HEIGHT][WIDTH];
 int food = 0;
 int curr = 0;
-int level = 1;           // Current level
-int computer_mode = 0;   // 0 for manual mode, 1 for computer mode
-int stop_thread = 0;     // Flag to stop the random movement thread
-int enemy_speed = 1;     // Speed of enemies (in seconds)
-int boost_moves = 0;     // Remaining boost moves
-int is_boost_active = 0; // Flag to check if boost is active
+int level = 1;
+int computer_mode = 0;
+int stop_thread = 0;
+int enemy_speed = 1;
+int boost_moves = 0;
+int is_boost_active = 0;
+pthread_mutex_t board_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for board access
 
-// Function to save the current game state to a binary file
+// Function to save the current game state
 void saveGame()
 {
     FILE *file = fopen("saved_game.bin", "wb");
@@ -51,23 +60,21 @@ void saveGame()
         return;
     }
 
-    // Save game state
-    fwrite(&level, sizeof(int), 1, file); // Save current level
+    fwrite(&level, sizeof(int), 1, file);
     fwrite(&pacman_x, sizeof(int), 1, file);
     fwrite(&pacman_y, sizeof(int), 1, file);
     fwrite(&score, sizeof(int), 1, file);
     fwrite(&food, sizeof(int), 1, file);
     fwrite(&curr, sizeof(int), 1, file);
     fwrite(&boost_moves, sizeof(int), 1, file);
-
-    // Save the board
+    fwrite(&is_boost_active, sizeof(int), 1, file); // Save boost status
     fwrite(board, sizeof(Cell), HEIGHT * WIDTH, file);
 
     fclose(file);
     printf("Game saved successfully!\n");
 }
 
-// Function to load the game state from a binary file
+// Function to load the game state
 int loadGame()
 {
     FILE *file = fopen("saved_game.bin", "rb");
@@ -77,16 +84,14 @@ int loadGame()
         return 0;
     }
 
-    // Load game state
-    fread(&level, sizeof(int), 1, file); // Load current level
+    fread(&level, sizeof(int), 1, file);
     fread(&pacman_x, sizeof(int), 1, file);
     fread(&pacman_y, sizeof(int), 1, file);
     fread(&score, sizeof(int), 1, file);
     fread(&food, sizeof(int), 1, file);
     fread(&curr, sizeof(int), 1, file);
     fread(&boost_moves, sizeof(int), 1, file);
-
-    // Load the board
+    fread(&is_boost_active, sizeof(int), 1, file); // Load boost status
     fread(board, sizeof(Cell), HEIGHT * WIDTH, file);
 
     fclose(file);
@@ -94,110 +99,209 @@ int loadGame()
     return 1;
 }
 
-void initialize()
+// Flood fill algorithm to check if all food is accessible
+int is_all_food_accessible(int start_x, int start_y)
 {
-    // Reset the board
+    Cell temp_board[HEIGHT][WIDTH];
     for (int i = 0; i < HEIGHT; i++)
     {
         for (int j = 0; j < WIDTH; j++)
         {
-            if (i == 0 || j == WIDTH - 1 || j == 0 || i == HEIGHT - 1)
+            temp_board[i][j] = board[i][j];
+        }
+    }
+    int accessible_food = 0;
+    int queue_x[WIDTH * HEIGHT];
+    int queue_y[WIDTH * HEIGHT];
+    int head = 0, tail = 0;
+
+    queue_x[tail] = start_x;
+    queue_y[tail] = start_y;
+    tail++;
+
+    temp_board[start_y][start_x].type = 'V'; // Mark as visited
+
+    while (head != tail)
+    {
+        int x = queue_x[head];
+        int y = queue_y[head];
+        head++;
+
+        // Check adjacent cells
+        int dx[] = {0, 0, 1, -1};
+        int dy[] = {1, -1, 0, 0};
+
+        for (int i = 0; i < 4; i++)
+        {
+            int new_x = x + dx[i];
+            int new_y = y + dy[i];
+
+            if (new_x >= 0 && new_x < WIDTH && new_y >= 0 && new_y < HEIGHT && temp_board[new_y][new_x].type != WALL && temp_board[new_y][new_x].type != 'V')
             {
-                board[i][j].type = WALL; // Boundary walls
-                board[i][j].value = 0;   // No additional value for walls
-            }
-            else
-            {
-                board[i][j].type = EMPTY;
-                board[i][j].value = 0;
+                if (temp_board[new_y][new_x].type == FOOD)
+                {
+                    accessible_food++;
+                }
+                queue_x[tail] = new_x;
+                queue_y[tail] = new_y;
+                tail++;
+                temp_board[new_y][new_x].type = 'V'; // Mark as visited
             }
         }
     }
+    return accessible_food == food;
+}
 
-    // Add walls based on the level
-    int wallCount = 50 + (level * 5); // Increase walls with level
-    while (wallCount != 0)
+void generate_random_map()
+{
+    // Fill with empty
+    for (int i = 0; i < HEIGHT; i++)
     {
-        int i = (rand() % (HEIGHT - 2)) + 1; // Avoid boundary walls
-        int j = (rand() % (WIDTH - 2)) + 1;
-
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY && board[i][j].type != BOOST)
+        for (int j = 0; j < WIDTH; j++)
         {
-            board[i][j].type = WALL;
+            board[i][j].type = EMPTY;
             board[i][j].value = 0;
-            wallCount--;
         }
     }
 
-    // Add demons based on the level
-    int demonCount = 10 + (level * 2); // Increase demons with level
-    while (demonCount != 0)
+    // Add borders
+    for (int i = 0; i < HEIGHT; i++)
     {
-        int i = (rand() % (HEIGHT - 2)) + 1;
-        int j = (rand() % (WIDTH - 2)) + 1;
-
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != ENEMY && board[i][j].type != BOOST)
-        {
-            board[i][j].type = DEMON;
-            board[i][j].value = demonCount; // Use value to store demon ID or other data
-            demonCount--;
-        }
+        board[i][0].type = WALL;
+        board[i][WIDTH - 1].type = WALL;
     }
-
-    // Add enemies based on the level
-    int enemyCount = 3 + level; // Increase enemies with level
-    while (enemyCount != 0)
+    for (int j = 0; j < WIDTH; j++)
     {
-        int i = (rand() % (HEIGHT - 2)) + 1;
-        int j = (rand() % (WIDTH - 2)) + 1;
-
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != DEMON && board[i][j].type != BOOST)
-        {
-            board[i][j].type = ENEMY;
-            board[i][j].value = 0; // Use value for enemy-specific data if needed
-            enemyCount--;
-        }
+        board[0][j].type = WALL;
+        board[HEIGHT - 1][j].type = WALL;
     }
 
-    // Add boosts based on the level
-    int boostCount = 2 + level; // Increase boosts with level
-    while (boostCount != 0)
+    // Add some guaranteed wall structures for better maze-like appearance
+    for (int i = 2; i < HEIGHT - 2; i += 4)
     {
-        int i = (rand() % (HEIGHT - 2)) + 1;
-        int j = (rand() % (WIDTH - 2)) + 1;
-
-        if (board[i][j].type != WALL && board[i][j].type != PACMAN && board[i][j].type != DEMON && board[i][j].type != ENEMY && board[i][j].type != BOOST)
+        for (int j = 2; j < WIDTH - 2; j += 4)
         {
-            board[i][j].type = BOOST;
-            board[i][j].value = 0; // Use value for boost-specific data if needed
-            boostCount--;
+            // Create small boxes of walls
+            board[i][j].type = WALL;
+            board[i + 1][j].type = WALL;
+            board[i][j + 1].type = WALL;
+            board[i + 1][j + 1].type = WALL;
         }
     }
 
-    // Place Pacman at the center
-    pacman_x = WIDTH / 2;
-    pacman_y = HEIGHT / 2;
-    board[pacman_y][pacman_x].type = PACMAN;
-    board[pacman_y][pacman_x].value = 0;
-
-    // Place food
-    food = 0;
+    // Randomly generate walls with longer structures
     for (int i = 1; i < HEIGHT - 1; i++)
     {
         for (int j = 1; j < WIDTH - 1; j++)
         {
-            if (board[i][j].type == EMPTY)
+            if (rand() % 10 == 0) // Adjust probability for wall density
             {
-                board[i][j].type = FOOD;
-                board[i][j].value = 1; // Use value to store food points
-                food++;
+                // Create horizontal wall
+                int wall_length = rand() % 5 + 2; // Random length 2-6
+                for (int k = 0; k < wall_length && j + k < WIDTH - 1; k++)
+                {
+                    board[i][j + k].type = WALL;
+                    board[i][j + k].value = 0;
+                }
+                j += wall_length - 1; // Skip the wall just created
+            }
+            else if (rand() % 10 == 0)
+            {
+                // Create vertical wall
+                int wall_length = rand() % 4 + 2; // Random length 2-5
+                for (int k = 0; k < wall_length && i + k < HEIGHT - 1; k++)
+                {
+                    board[i + k][j].type = WALL;
+                    board[i + k][j].value = 0;
+                }
+                i += wall_length - 1; // Skip the wall just created
             }
         }
     }
 }
 
+void initialize()
+{
+    pthread_mutex_lock(&board_mutex); // Lock before modifying the board
+    food = 0;
+    level_score = 0;     // Reset level score at the start of each level
+    is_boost_active = 0; // Deactivate boost at level start
+    boost_moves = 0;
+
+    // Generate the map until all food is accessible
+    do
+    {
+        generate_random_map();
+        // Place food
+        food = 0;
+        for (int i = 1; i < HEIGHT - 1; i++)
+        {
+            for (int j = 1; j < WIDTH - 1; j++)
+            {
+                if (board[i][j].type == EMPTY)
+                {
+                    if (rand() % 2 == 0) // Reduce the amount of foods
+                    {
+                        board[i][j].type = FOOD;
+                        board[i][j].value = 1;
+                        food++;
+                    }
+                }
+            }
+        }
+
+        // Place boosts (approximately 1 boost per level)
+        if (rand() % 2 == 0) // 50% chance of boost appearing each level.  adjust for balance
+        {
+            int i, j;
+            do
+            {
+                i = (rand() % (HEIGHT - 2)) + 1;
+                j = (rand() % (WIDTH - 2)) + 1;
+            } while (board[i][j].type != EMPTY);
+            board[i][j].type = BOOST;
+            board[i][j].value = 0;
+        }
+
+        pacman_x = WIDTH / 2;
+        pacman_y = HEIGHT / 2;
+        board[pacman_y][pacman_x].type = PACMAN;
+        board[pacman_y][pacman_x].value = 0;
+    } while (!is_all_food_accessible(pacman_x, pacman_y));
+
+    // Add demons
+    int demonCount = 1 + (level / 3);
+    for (int k = 0; k < demonCount; k++)
+    {
+        int i, j;
+        do
+        {
+            i = (rand() % (HEIGHT - 2)) + 1;
+            j = (rand() % (WIDTH - 2)) + 1;
+        } while (board[i][j].type != EMPTY);
+        board[i][j].type = DEMON;
+    }
+
+    // Add enemies
+    int enemyCount = 1 + (level / 3);
+    for (int k = 0; k < enemyCount; k++)
+    {
+        int i, j;
+        do
+        {
+            i = (rand() % (HEIGHT - 2)) + 1;
+            j = (rand() % (WIDTH - 2)) + 1;
+        } while (board[i][j].type != EMPTY);
+        board[i][j].type = ENEMY;
+    }
+
+    pthread_mutex_unlock(&board_mutex); // Unlock after modifying the board
+}
+
 void draw()
 {
+    pthread_mutex_lock(&board_mutex); // Lock before reading the board
+
     // Clear screen
     system("cls");
 
@@ -206,11 +310,35 @@ void draw()
     {
         for (int j = 0; j < WIDTH; j++)
         {
-            printf("%c", board[i][j].type); // Print the type of the cell
+            switch (board[i][j].type)
+            {
+            case WALL:
+                printf(ANSI_COLOR_BLUE "%c" ANSI_COLOR_RESET, board[i][j].type);
+                break;
+            case FOOD:
+                printf(ANSI_COLOR_YELLOW "%c" ANSI_COLOR_RESET, board[i][j].type);
+                break;
+            case PACMAN:
+                printf(ANSI_COLOR_GREEN "%c" ANSI_COLOR_RESET, board[i][j].type);
+                break;
+            case DEMON:
+                printf(ANSI_COLOR_RED "%c" ANSI_COLOR_RESET, board[i][j].type);
+                break;
+            case ENEMY:
+                printf(ANSI_COLOR_MAGENTA "%c" ANSI_COLOR_RESET, board[i][j].type);
+                break;
+            case BOOST:
+                printf(ANSI_COLOR_CYAN "%c" ANSI_COLOR_RESET, board[i][j].type);
+                break;
+            default:
+                printf("%c", board[i][j].type);
+                break;
+            }
         }
         printf("\n");
     }
-    printf("Score: %d\n", score);
+    printf("Score: %d\n", score);             // Print the total score
+    printf("Level Score: %d\n", level_score); // Print level score
     printf("Level: %d\n", level);
     printf("Total Food count: %d\n", food);
     printf("Total Food eaten: %d\n", curr);
@@ -219,56 +347,94 @@ void draw()
     {
         printf("Boost moves left: %d\n", boost_moves);
     }
+
+    pthread_mutex_unlock(&board_mutex); // Unlock after reading the board
 }
 
 // Function enables to move the Cursor
 void move(int move_x, int move_y)
 {
-    int x = pacman_x + move_x;
-    int y = pacman_y + move_y;
-
-    if (board[y][x].type != WALL)
+    int moves = 1;
+    if (is_boost_active)
     {
-        if (board[y][x].type == FOOD)
-        {
-            score += board[y][x].value; // Add food points to score
-            food--;
-            curr++;
-            if (food == 0)
-            {
-                level++;      // Increment level
-                initialize(); // Generate new level
-                res = 0;      // Reset game result
-            }
-        }
-        else if (board[y][x].type == BOOST)
-        {
-            is_boost_active = 1;
-            boost_moves = 10; // Activate boost for 10 moves
-        }
-        else if (board[y][x].type == DEMON || board[y][x].type == ENEMY)
-        {
-            res = 1; // Game over if Pac-Man collides with a demon or enemy
-        }
-
-        board[pacman_y][pacman_x].type = EMPTY;
-        board[pacman_y][pacman_x].value = 0;
-        pacman_x = x;
-        pacman_y = y;
-        board[pacman_y][pacman_x].type = PACMAN;
-        board[pacman_y][pacman_x].value = 0;
-
-        // Refresh the screen only when there is a change
-        draw();
+        moves = 2;
     }
+
+    for (int i = 0; i < moves; i++)
+    {
+        pthread_mutex_lock(&board_mutex); // Lock before modifying the board
+
+        int x = pacman_x + move_x;
+        int y = pacman_y + move_y;
+
+        // Boundary check
+        if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT)
+        {
+            pthread_mutex_unlock(&board_mutex);
+            return; // Invalid move, early return
+        }
+
+        if (board[y][x].type != WALL)
+        {
+            if (board[y][x].type == FOOD)
+            {
+                level_score += board[y][x].value; // Add food points to level_score
+                score += board[y][x].value;       // Add to total score
+                food--;
+                curr++;
+                board[y][x].type = EMPTY; // Remove food from the board
+                board[y][x].value = 0;
+            }
+            else if (board[y][x].type == BOOST)
+            {
+                is_boost_active = 1;
+                boost_moves = 10; // Activate boost for 10 moves
+                board[y][x].type = EMPTY;
+                board[y][x].value = 0;
+            }
+            else if (board[y][x].type == DEMON || board[y][x].type == ENEMY)
+            {
+                res = 1; // Game over if Pac-Man collides with a demon or enemy
+            }
+
+            board[pacman_y][pacman_x].type = EMPTY;
+            board[pacman_y][pacman_x].value = 0;
+            pacman_x = x;
+            pacman_y = y;
+            board[pacman_y][pacman_x].type = PACMAN;
+            board[pacman_y][pacman_x].value = 0;
+        }
+        else
+        {
+            pthread_mutex_unlock(&board_mutex);
+            break; // Stop moving if hit a wall
+        }
+        pthread_mutex_unlock(&board_mutex); // Unlock after modifying the board
+    }
+    // Decrement boost moves if active
+
+    if (is_boost_active)
+    {
+        boost_moves--;
+        if (boost_moves <= 0)
+        {
+            is_boost_active = 0;
+            boost_moves = 0;
+        }
+    }
+    // Refresh the screen only when there is a change
+    draw();
 }
 
 // Function to move enemies randomly
 void move_enemy(int x, int y)
 {
+    pthread_mutex_lock(&board_mutex); // Lock before modifying the board
+
     int direction = rand() % 4; // 0: up, 1: down, 2: left, 3: right
     int new_x = x, new_y = y;
 
+    // Calculate potential new coordinates
     switch (direction)
     {
     case 0:
@@ -285,19 +451,28 @@ void move_enemy(int x, int y)
         break; // Right
     }
 
+    // Boundary check
+    if (new_x < 0 || new_x >= WIDTH || new_y < 0 || new_y >= HEIGHT)
+    {
+        pthread_mutex_unlock(&board_mutex);
+        return; // Invalid move, early return
+    }
+
     // Check if the new position is valid
-    if (board[new_y][new_x].type == EMPTY || board[new_y][new_x].type == FOOD)
+    if (board[new_y][new_x].type == EMPTY || board[new_y][new_x].type == FOOD || board[new_y][new_x].type == PACMAN) // allow enemies to walk on pacman to kill him
     {
         board[y][x].type = EMPTY;
         board[y][x].value = 0;
         board[new_y][new_x].type = ENEMY;
         board[new_y][new_x].value = 0;
     }
-    else if (board[new_y][new_x].type == PACMAN)
+    else if (board[new_y][new_x].type == PACMAN) // Redundant check, but makes logic clear
     {
         // Enemy eats Pac-Man
         res = 1; // Game over
     }
+
+    pthread_mutex_unlock(&board_mutex); // Unlock after modifying the board
 }
 
 // Function to handle enemy movements
@@ -305,16 +480,20 @@ void *enemy_movement(void *arg)
 {
     while (!stop_thread)
     {
+        pthread_mutex_lock(&board_mutex);
         for (int i = 1; i < HEIGHT - 1; i++)
         {
             for (int j = 1; j < WIDTH - 1; j++)
             {
                 if (board[i][j].type == ENEMY)
                 {
+                    pthread_mutex_unlock(&board_mutex);
                     move_enemy(j, i);
+                    pthread_mutex_lock(&board_mutex);
                 }
             }
         }
+        pthread_mutex_unlock(&board_mutex);
         draw();
         sleep(enemy_speed); // Wait based on enemy speed
     }
@@ -350,6 +529,25 @@ void *random_movement(void *arg)
     return NULL;
 }
 
+// Function to count remaining food
+int count_food()
+{
+    int count = 0;
+    pthread_mutex_lock(&board_mutex);
+    for (int i = 1; i < HEIGHT - 1; i++)
+    {
+        for (int j = 1; j < WIDTH - 1; j++)
+        {
+            if (board[i][j].type == FOOD)
+            {
+                count++;
+            }
+        }
+    }
+    pthread_mutex_unlock(&board_mutex);
+    return count;
+}
+
 // Main Function
 int main()
 {
@@ -377,21 +575,21 @@ int main()
             else
             {
                 initialize();
-                totalFood = food - 35;
+                totalFood = food; // correct initialization
                 remove("saved_game.bin");
             }
         }
         else
         {
             initialize();
-            totalFood = food - 35;
+            totalFood = food; // Correct initialization
             remove("saved_game.bin");
         }
     }
     else
     {
         initialize();
-        totalFood = food - 35;
+        totalFood = food; // correct initialization
     }
 
     // Create a thread for random movement
@@ -414,17 +612,18 @@ int main()
             stop_thread = 1;                     // Stop the random movement thread
             pthread_join(thread_id, NULL);       // Wait for the thread to finish
             pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
+            pthread_mutex_destroy(&board_mutex); // Destroy the mutex before exiting
+
             return 1;
         }
 
-        if (res == 2)
+        food = count_food(); // Update food count
+
+        if (food <= 0)
         {
-            system("cls");
-            printf("You Win! \n Your Score: %d\n", score);
-            stop_thread = 1;                     // Stop the random movement thread
-            pthread_join(thread_id, NULL);       // Wait for the thread to finish
-            pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
-            return 1;
+            level++; // Increment level
+            initialize();
+            res = 0; // Reset game result
         }
 
         ch = getch();
@@ -434,60 +633,24 @@ int main()
             if (!computer_mode)
             {
                 move(0, -1);
-                if (is_boost_active && boost_moves > 0)
-                {
-                    move(0, -1); // Move twice during boost
-                    boost_moves--;
-                    if (boost_moves == 0)
-                    {
-                        is_boost_active = 0;
-                    }
-                }
             }
             break;
         case 's':
             if (!computer_mode)
             {
                 move(0, 1);
-                if (is_boost_active && boost_moves > 0)
-                {
-                    move(0, 1); // Move twice during boost
-                    boost_moves--;
-                    if (boost_moves == 0)
-                    {
-                        is_boost_active = 0;
-                    }
-                }
             }
             break;
         case 'a':
             if (!computer_mode)
             {
                 move(-1, 0);
-                if (is_boost_active && boost_moves > 0)
-                {
-                    move(-1, 0); // Move twice during boost
-                    boost_moves--;
-                    if (boost_moves == 0)
-                    {
-                        is_boost_active = 0;
-                    }
-                }
             }
             break;
         case 'd':
             if (!computer_mode)
             {
                 move(1, 0);
-                if (is_boost_active && boost_moves > 0)
-                {
-                    move(1, 0); // Move twice during boost
-                    boost_moves--;
-                    if (boost_moves == 0)
-                    {
-                        is_boost_active = 0;
-                    }
-                }
             }
             break;
         case 'q':
@@ -495,6 +658,8 @@ int main()
             stop_thread = 1;                     // Stop the random movement thread
             pthread_join(thread_id, NULL);       // Wait for the thread to finish
             pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
+            pthread_mutex_destroy(&board_mutex); // Destroy the mutex before exiting
+
             return 0;
         case 'p':
             saveGame();
@@ -502,6 +667,8 @@ int main()
             stop_thread = 1;                     // Stop the random movement thread
             pthread_join(thread_id, NULL);       // Wait for the thread to finish
             pthread_join(enemy_thread_id, NULL); // Wait for the enemy thread to finish
+            pthread_mutex_destroy(&board_mutex); // Destroy the mutex before exiting
+
             return 0;
         case 'o':
             computer_mode = !computer_mode;
